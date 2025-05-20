@@ -46,6 +46,7 @@ logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(
 class RSSMonitor(discord.Client):
     def __init__(self, from_start=False, target_category=None):
         intents = discord.Intents.default()
+        intents.guild_messages = True
         super().__init__(intents=intents)
         self.config = yaml.safe_load(open('config.yaml'))
         logging.info(f"Loaded config: {self.config}")
