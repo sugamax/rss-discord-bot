@@ -52,15 +52,19 @@ class RSSMonitor(discord.Client):
         logging.info(f"Loaded config: {self.config}")
         self.target_category = target_category
         self.feeds = self.config['rss_feeds']
-        self.seen_entries = self.load_seen_entries()
         self.start_date = datetime.now() - timedelta(days=7)
         self.from_start = from_start
         self.channels = self.config['settings']['channels']
         logging.info(f"Channel config: {self.channels}")
-        self.check_now = False
         self._session = None
         self._closed = False
+        
+        # Initialize database first
         self._init_db()
+        
+        # Then load seen entries
+        self.seen_entries = self.load_seen_entries()
+        
         self.icons = {
             'google': '🔍',
             'microsoft': '🪟',
@@ -442,10 +446,38 @@ class RSSMonitor(discord.Client):
             except:
                 return None
 
+    @contextmanager
+    def _get_db(self):
+        """Context manager for database connections."""
+        db_path = self.config['settings'].get('db_path', 'rss_bot.db')
+        conn = None
+        try:
+            conn = sqlite3.connect(db_path)
+            conn.row_factory = sqlite3.Row
+            yield conn, conn.cursor()
+        except Exception as e:
+            logging.error(f"Database connection error: {str(e)}")
+            raise
+        finally:
+            if conn:
+                conn.close()
+
     def _init_db(self):
         """Initialize the SQLite database."""
         db_path = self.config['settings'].get('db_path', 'rss_bot.db')
-        with self._get_db() as (conn, cur):
+        logging.info(f"Initializing database at: {db_path}")
+        
+        # Ensure the parent directory exists
+        os.makedirs(os.path.dirname(db_path), exist_ok=True)
+        logging.info(f"Ensured directory exists for database")
+        
+        # Create a direct connection for initialization
+        conn = None
+        try:
+            conn = sqlite3.connect(db_path)
+            cur = conn.cursor()
+            
+            # Create the table if it doesn't exist
             cur.execute('''
                 CREATE TABLE IF NOT EXISTS seen_entries (
                     feed_name TEXT,
@@ -455,54 +487,86 @@ class RSSMonitor(discord.Client):
                 )
             ''')
             conn.commit()
-
-    @contextmanager
-    def _get_db(self):
-        """Context manager for database connections."""
-        db_path = self.config['settings'].get('db_path', 'rss_bot.db')
-        conn = sqlite3.connect(db_path)
-        try:
-            yield conn, conn.cursor()
+            
+            # Verify table exists
+            cur.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='seen_entries'")
+            if not cur.fetchone():
+                raise Exception("Failed to create seen_entries table")
+                
+            logging.info("Database initialized successfully")
+            
+        except Exception as e:
+            logging.error(f"Error initializing database: {str(e)}")
+            raise
         finally:
-            conn.close()
+            if conn:
+                conn.close()
 
     def load_seen_entries(self):
         """Load seen entries from SQLite database."""
         seen_entries = defaultdict(list)
-        with self._get_db() as (conn, cur):
-            cur.execute('SELECT feed_name, entry_id FROM seen_entries')
-            for feed_name, entry_id in cur.fetchall():
-                seen_entries[feed_name].append(entry_id)
-        return seen_entries
+        try:
+            with self._get_db() as (conn, cur):
+                cur.execute('SELECT feed_name, entry_id FROM seen_entries')
+                rows = cur.fetchall()
+                logging.info(f"Loaded {len(rows)} seen entries from database")
+                for feed_name, entry_id in rows:
+                    seen_entries[feed_name].append(entry_id)
+            return seen_entries
+        except Exception as e:
+            logging.error(f"Error loading seen entries: {str(e)}")
+            return defaultdict(list)
 
     def save_seen_entries(self):
         """Save seen entries to SQLite database."""
-        with self._get_db() as (conn, cur):
-            # Get all current entries
-            cur.execute('SELECT feed_name, entry_id FROM seen_entries')
-            existing_entries = {(feed_name, entry_id) for feed_name, entry_id in cur.fetchall()}
-            
-            # Prepare new entries to insert
-            new_entries = []
-            for feed_name, entries in self.seen_entries.items():
-                for entry_id in entries:
-                    if (feed_name, entry_id) not in existing_entries:
-                        new_entries.append((feed_name, entry_id))
-            
-            # Insert new entries
-            if new_entries:
-                cur.executemany(
-                    'INSERT OR IGNORE INTO seen_entries (feed_name, entry_id) VALUES (?, ?)',
-                    new_entries
-                )
-                conn.commit()
+        try:
+            with self._get_db() as (conn, cur):
+                # Get all current entries
+                cur.execute('SELECT feed_name, entry_id FROM seen_entries')
+                existing_entries = {(feed_name, entry_id) for feed_name, entry_id in cur.fetchall()}
+                
+                # Prepare new entries to insert
+                new_entries = []
+                for feed_name, entries in self.seen_entries.items():
+                    for entry_id in entries:
+                        if (feed_name, entry_id) not in existing_entries:
+                            new_entries.append((feed_name, entry_id))
+                
+                # Insert new entries
+                if new_entries:
+                    cur.executemany(
+                        'INSERT OR IGNORE INTO seen_entries (feed_name, entry_id) VALUES (?, ?)',
+                        new_entries
+                    )
+                    conn.commit()
+                    logging.info(f"Saved {len(new_entries)} new entries to database")
+                    
+                    # Verify the entries were saved
+                    cur.execute('SELECT COUNT(*) FROM seen_entries')
+                    total_entries = cur.fetchone()[0]
+                    logging.info(f"Total entries in database: {total_entries}")
+        except Exception as e:
+            logging.error(f"Error saving seen entries: {str(e)}")
 
     def is_entry_new(self, feed_name, entry):
         """Check if an entry is new by querying the database."""
         entry_id = entry.get('id', entry.get('link', ''))
+        
+        if not entry_id:
+            logging.warning(f"No entry ID found for entry from {feed_name}")
+            return True
+            
         if self.from_start:
             return True
-        return entry_id not in self.seen_entries.get(feed_name, [])
+            
+        try:
+            with self._get_db() as (conn, cur):
+                # Check if entry exists in database
+                cur.execute('SELECT 1 FROM seen_entries WHERE feed_name = ? AND entry_id = ?', (feed_name, entry_id))
+                return cur.fetchone() is None
+        except Exception as e:
+            logging.error(f"Error checking if entry is new: {str(e)}")
+            return True  # If there's an error, treat it as new
 
     def is_entry_recent(self, entry):
         try:
@@ -1029,7 +1093,7 @@ class RSSMonitor(discord.Client):
             self._last_category = category
             await asyncio.sleep(1)  # Small delay after header
 
-    async def send_category_section(self, channel, category, entries):
+    async def send_category_section(self, channel, category, entries, include_date=None):
         if not entries:
             return
 
@@ -1041,6 +1105,9 @@ class RSSMonitor(discord.Client):
 
         # Create the category header
         header_text = f"# {self.categories[channel_type][category]['icon']} {self.categories[channel_type][category]['name']}"
+        if include_date:
+            header_text = f"📅 {include_date}\n\n{header_text}"
+            
         embed = discord.Embed(
             title=header_text,
             color=discord.Color.blue()
@@ -1196,9 +1263,11 @@ class RSSMonitor(discord.Client):
                     await self.send_to_discord(feed_name, entry)
                     if feed_name not in self.seen_entries:
                         self.seen_entries[feed_name] = []
-                    self.seen_entries[feed_name].append(entry.get('id', entry.get('link', '')))
-                    self.save_seen_entries()
-                    logging.info(f"New entry from {feed_name}: {entry.title}")
+                    entry_id = entry.get('id', entry.get('link', ''))
+                    if entry_id:  # Only add if we have a valid entry_id
+                        self.seen_entries[feed_name].append(entry_id)
+                        self.save_seen_entries()  # Save after each new entry
+                        logging.info(f"New entry from {feed_name}: {entry.title} (ID: {entry_id})")
 
         except Exception as e:
             logging.error(f"Error checking feed {feed_name}: {str(e)}")
@@ -1264,20 +1333,19 @@ class RSSMonitor(discord.Client):
             # Check if there are any entries to post
             has_entries = any(entries_by_category[category] for category in category_order)
             if has_entries:
-                # Post date message right before the content
-                current_time = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-                embed = discord.Embed(
-                    title=f"📅 {current_time}",
-                    color=discord.Color.blue()
-                )
-                await channel.send(embed=embed)
-                await asyncio.sleep(1)  # Small delay after date message
-                
                 # Post the entries
+                first_category = True
                 for category in category_order:
                     if entries_by_category[category]:
                         try:
-                            await self.send_category_section(channel, category, entries_by_category[category])
+                            # Include date in the first category header
+                            if first_category:
+                                current_time = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+                                await self.send_category_section(channel, category, entries_by_category[category], include_date=current_time)
+                                first_category = False
+                            else:
+                                await self.send_category_section(channel, category, entries_by_category[category])
+                            
                             # Update seen entries
                             for feed_name, entry in entries_by_category[category]:
                                 if feed_name not in self.seen_entries:
@@ -1319,13 +1387,14 @@ class RSSMonitor(discord.Client):
 async def main():
     parser = argparse.ArgumentParser()
     parser.add_argument('--from-start', action='store_true', help='Process all entries from May 2025, ignoring seen entries')
-    parser.add_argument('--check-now', action='store_true', help='Run feed check immediately and exit')
     parser.add_argument('--category', choices=['engineering', 'data_analytics', 'management'], 
                       help='Run bot for specific category only')
     args = parser.parse_args()
 
+    # Log the arguments for debugging
+    logging.info(f"Starting bot with arguments: from_start={args.from_start}, category={args.category}")
+
     monitor = RSSMonitor(from_start=args.from_start, target_category=args.category)
-    monitor.check_now = args.check_now
     
     try:
         await monitor.start(os.getenv('DISCORD_TOKEN'))
