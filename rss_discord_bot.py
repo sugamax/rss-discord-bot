@@ -1143,7 +1143,14 @@ class RSSMonitor(discord.Client):
             
             # Add to embed if it fits, otherwise send current embed and start a new one
             if len(embed.description) + len(entry_text) > 4000:  # Discord's limit
-                await channel.send(embed=embed)
+                try:
+                    async with asyncio.timeout(1.0):  # 1 second timeout
+                        await channel.send(embed=embed)
+                except asyncio.TimeoutError:
+                    logging.error(f"Timeout while sending message to channel {channel.id}")
+                except Exception as e:
+                    logging.error(f"Error sending message to channel {channel.id}: {str(e)}")
+                    
                 embed = discord.Embed(
                     title=header_text,
                     color=discord.Color.blue()
@@ -1153,8 +1160,13 @@ class RSSMonitor(discord.Client):
             embed.description += entry_text
 
         # Send the final embed for this category
-        await channel.send(embed=embed)
-        await asyncio.sleep(1.5)  # Delay between categories
+        try:
+            async with asyncio.timeout(1.0):  # 1 second timeout
+                await channel.send(embed=embed)
+        except asyncio.TimeoutError:
+            logging.error(f"Timeout while sending final message to channel {channel.id}")
+        except Exception as e:
+            logging.error(f"Error sending final message to channel {channel.id}: {str(e)}")
 
     async def send_to_discord(self, feed_name, entry):
         channel = self.get_channel(self.channel_id)
@@ -1242,10 +1254,28 @@ class RSSMonitor(discord.Client):
             logging.error(f"Unexpected error fetching feed {feed_url}: {str(e)}")
             return None
 
+    def get_category_order(self, channel_type):
+        """Get the ordered list of categories for a channel type."""
+        if channel_type == 'engineering':
+            return [
+                'tutorial', 'web', 'cloud', 'database', 'ai', 'security', 'release', 'bug',
+                'mobile', 'game', 'design', 'architecture', 'data', 'default'
+            ]
+        elif channel_type == 'data_analytics':
+            return [
+                'data_engineering', 'data_science', 'analytics', 'ml', 'ai', 'big_data',
+                'data_quality', 'data_governance', 'data_visualization', 'default'
+            ]
+        else:  # management
+            return [
+                'leadership', 'team_management', 'product_management', 'project_management',
+                'agile', 'strategy', 'innovation', 'culture', 'career', 'default'
+            ]
+
     async def check_feed(self, feed_name, feed_url):
         try:
             await self._init_session()
-            async with self._session.get(feed_url) as response:
+            async with self._session.get(feed_url, timeout=10) as response:  # 10 second timeout for feed fetching
                 if response.status == 200:
                     content = await response.text()
                     feed = feedparser.parse(content)
@@ -1256,34 +1286,92 @@ class RSSMonitor(discord.Client):
                         
                     logging.info(f"Processing {len(feed.entries)} entries from {feed_name}")
                     
+                    # Dictionary to store entries by category
+                    entries_by_category = defaultdict(list)
+                    
                     for entry in feed.entries:
                         if self.is_entry_new(feed_name, entry) and self.is_entry_recent(entry):
                             logging.info(f"New entry found in {feed_name}: {entry.get('title', 'No title')}")
+                            # Get category for the entry
+                            content = self.get_tldr(entry) or ""
+                            category = self.get_category(feed_name, entry.title, content, entry)
+                            entries_by_category[category].append((feed_name, entry))
+                            # Save to seen entries
                             self.seen_entries[feed_name].append(entry.get('id', entry.get('link', '')))
                             self.save_seen_entries()
+                    
+                    # Send entries to Discord
+                    if entries_by_category:
+                        channel_type = self.target_category or 'engineering'
+                        if channel_type not in self.channels:
+                            logging.error(f"No channel configuration found for {channel_type}")
+                            return
+                            
+                        channel_id = self.channels[channel_type]['id']
+                        channel = self.get_channel(int(channel_id))
+                        if not channel:
+                            logging.error(f"Could not find channel with ID {channel_id}")
+                            return
+                            
+                        # Get category order
+                        category_order = self.get_category_order(channel_type)
+                        
+                        # Send entries by category
+                        first_category = True
+                        for category in category_order:
+                            if entries_by_category[category]:
+                                try:
+                                    async with asyncio.timeout(1.0):  # 1 second timeout for each category
+                                        # Include date in the first category header
+                                        if first_category:
+                                            current_time = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+                                            await self.send_category_section(channel, category, entries_by_category[category], include_date=current_time)
+                                            first_category = False
+                                        else:
+                                            await self.send_category_section(channel, category, entries_by_category[category])
+                                except asyncio.TimeoutError:
+                                    logging.error(f"Timeout while processing category '{category}' for channel '{channel_type}'")
+                                except Exception as e:
+                                    logging.error(f"Error posting category '{category}' to channel '{channel_type}': {str(e)}")
+                                    logging.error(f"Category details: {self.categories.get(channel_type, {}).get(category, 'Not found')}")
+                                    logging.error(f"Number of entries in category: {len(entries_by_category[category])}")
+                                    import traceback
+                                    logging.error(f"Stack trace:\n{traceback.format_exc()}")
                             
                 else:
                     logging.error(f"Failed to fetch feed {feed_name}: HTTP {response.status}")
                     
+        except asyncio.TimeoutError:
+            logging.error(f"Timeout while fetching feed {feed_name}")
         except Exception as e:
             logging.error(f"Error checking feed {feed_name}: {str(e)}")
-            
+            import traceback
+            logging.error(f"Stack trace:\n{traceback.format_exc()}")
+
     async def check_all_feeds(self):
         """Check all feeds for new entries"""
         try:
             await self._init_session()
             tasks = []
-            for category, feeds in self.feeds.items():
-                if self.target_category and category != self.target_category:
-                    continue
-                for feed_name, feed_url in feeds.items():
-                    tasks.append(self.check_feed(feed_name, feed_url))
+            
+            # Get the appropriate category
+            category = self.target_category or 'engineering'
+            if category not in self.feeds:
+                logging.error(f"Category '{category}' not found in feeds configuration")
+                return
+                
+            # Process feeds for the selected category
+            for feed in self.feeds[category]:
+                if isinstance(feed, dict) and 'name' in feed and 'url' in feed:
+                    tasks.append(self.check_feed(feed['name'], feed['url']))
                     
             if tasks:
                 await asyncio.gather(*tasks)
                 
         except Exception as e:
             logging.error(f"Error checking feeds: {str(e)}")
+            import traceback
+            logging.error(f"Stack trace:\n{traceback.format_exc()}")
         finally:
             await self._close_session()
 
