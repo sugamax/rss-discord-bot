@@ -1,5 +1,4 @@
 import feedparser
-import schedule
 import time
 import json
 import yaml
