@@ -1244,145 +1244,59 @@ class RSSMonitor(discord.Client):
 
     async def check_feed(self, feed_name, feed_url):
         try:
-            feed = await self.fetch_feed(feed_url)
-            if not feed:
-                logging.error(f"Could not fetch feed {feed_name} ({feed_url})")
-                return
-
-            if feed.bozo and not feed.entries:
-                logging.error(f"Error parsing feed {feed_name}: {feed.bozo_exception}")
-                return
-
-            # Add feed name to each entry for better error reporting
-            for entry in feed.entries:
-                if not hasattr(entry, 'feed'):
-                    entry.feed = {'title': feed_name}
-
-            for entry in feed.entries:
-                if self.is_entry_new(feed_name, entry) and self.is_entry_recent(entry):
-                    await self.send_to_discord(feed_name, entry)
-                    if feed_name not in self.seen_entries:
-                        self.seen_entries[feed_name] = []
-                    entry_id = entry.get('id', entry.get('link', ''))
-                    if entry_id:  # Only add if we have a valid entry_id
-                        self.seen_entries[feed_name].append(entry_id)
-                        self.save_seen_entries()  # Save after each new entry
-                        logging.info(f"New entry from {feed_name}: {entry.title} (ID: {entry_id})")
-
+            await self._init_session()
+            async with self._session.get(feed_url) as response:
+                if response.status == 200:
+                    content = await response.text()
+                    feed = feedparser.parse(content)
+                    
+                    if not feed.entries:
+                        logging.warning(f"No entries found in feed: {feed_name}")
+                        return
+                        
+                    logging.info(f"Processing {len(feed.entries)} entries from {feed_name}")
+                    
+                    for entry in feed.entries:
+                        if self.is_entry_new(feed_name, entry) and self.is_entry_recent(entry):
+                            logging.info(f"New entry found in {feed_name}: {entry.get('title', 'No title')}")
+                            self.seen_entries[feed_name].append(entry.get('id', entry.get('link', '')))
+                            self.save_seen_entries()
+                            
+                else:
+                    logging.error(f"Failed to fetch feed {feed_name}: HTTP {response.status}")
+                    
         except Exception as e:
             logging.error(f"Error checking feed {feed_name}: {str(e)}")
-
+            
     async def check_all_feeds(self):
-        # Dictionary to store entries by category
-        entries_by_category = defaultdict(list)
-        
-        # Only process the specified category if one is provided
-        feed_categories = [self.target_category] if self.target_category else ['engineering', 'data_analytics', 'management']
-
-        for category in feed_categories:
-            if category not in self.feeds:
-                continue
-                
-            for feed in self.feeds[category]:
-                if isinstance(feed, dict) and 'name' in feed and 'url' in feed:
-                    try:
-                        feed_data = await self.fetch_feed(feed['url'])
-                        if not feed_data:
-                            continue
-
-                        for entry in feed_data.entries:
-                            if self.is_entry_new(feed['name'], entry) and self.is_entry_recent(entry):
-                                content = self.get_tldr(entry) or ""
-                                entry_category = self.get_category(feed['name'], entry.title, content, entry)
-                                
-                                # Use the category directly, falling back to 'default' if it doesn't exist
-                                channel_type = self.target_category or 'engineering'
-                                if channel_type in self.categories and entry_category in self.categories[channel_type]:
-                                    entries_by_category[entry_category].append((feed['name'], entry))
-                                else:
-                                    logging.info(f"Category '{entry_category}' not found in {channel_type} channel type, using 'default' category for entry '{entry.title}' from feed '{feed['name']}'")
-                                    entries_by_category['default'].append((feed['name'], entry))
-                                
-                    except Exception as e:
-                        logging.error(f"Error checking feed {feed['name']}: {str(e)}")
-                        import traceback
-                        logging.error(f"Stack trace:\n{traceback.format_exc()}")
-
-        # Get the appropriate category order based on channel type
-        channel_type = self.target_category or 'engineering'
-        category_order = self.get_category_order(channel_type)
-        
-        # Only send to the channel matching the specified category
-        channel_name = channel_type
-        if channel_name not in self.channels:
-            logging.error(f"No channel configuration found for {channel_name}")
-            return
-
+        """Check all feeds for new entries"""
         try:
-            channel_config = self.channels[channel_name]
-            channel_id = channel_config['id']
-            if isinstance(channel_id, str) and channel_id.startswith('YOUR_'):
-                logging.error(f"Invalid channel ID for {channel_name}: {channel_id}")
-                return
+            await self._init_session()
+            tasks = []
+            for category, feeds in self.feeds.items():
+                if self.target_category and category != self.target_category:
+                    continue
+                for feed_name, feed_url in feeds.items():
+                    tasks.append(self.check_feed(feed_name, feed_url))
+                    
+            if tasks:
+                await asyncio.gather(*tasks)
                 
-            channel = self.get_channel(int(channel_id))
-            if not channel:
-                logging.error(f"Could not find channel with ID {channel_id}")
-                return
-
-            # Check if there are any entries to post
-            has_entries = any(entries_by_category[category] for category in category_order)
-            if has_entries:
-                # Post the entries
-                first_category = True
-                for category in category_order:
-                    if entries_by_category[category]:
-                        try:
-                            # Include date in the first category header
-                            if first_category:
-                                current_time = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-                                await self.send_category_section(channel, category, entries_by_category[category], include_date=current_time)
-                                first_category = False
-                            else:
-                                await self.send_category_section(channel, category, entries_by_category[category])
-                            
-                            # Update seen entries
-                            for feed_name, entry in entries_by_category[category]:
-                                if feed_name not in self.seen_entries:
-                                    self.seen_entries[feed_name] = []
-                                self.seen_entries[feed_name].append(entry.get('id', entry.get('link', '')))
-                            self.save_seen_entries()
-                        except Exception as e:
-                            logging.error(f"Error posting category '{category}' to channel '{channel_name}': {str(e)}")
-                            logging.error(f"Category details: {self.categories.get(channel_type, {}).get(category, 'Not found')}")
-                            logging.error(f"Number of entries in category: {len(entries_by_category[category])}")
-                            import traceback
-                            logging.error(f"Stack trace:\n{traceback.format_exc()}")
         except Exception as e:
-            logging.error(f"Error processing channel {channel_name}: {str(e)}")
-            logging.error(f"Channel type: {channel_type}")
-            logging.error(f"Available categories: {list(self.categories.get(channel_type, {}).keys())}")
-            logging.error(f"Category order: {category_order}")
-            import traceback
-            logging.error(f"Stack trace:\n{traceback.format_exc()}")
+            logging.error(f"Error checking feeds: {str(e)}")
+        finally:
+            await self._close_session()
 
-    def get_category_order(self, channel_type):
-        """Get the ordered list of categories for a channel type."""
-        if channel_type == 'engineering':
-            return [
-                'tutorial', 'web', 'cloud', 'database', 'ai', 'security', 'release', 'bug',
-                'mobile', 'game', 'design', 'architecture', 'data', 'default'
-            ]
-        elif channel_type == 'data_analytics':
-            return [
-                'data_engineering', 'data_science', 'analytics', 'ml', 'ai', 'big_data',
-                'data_quality', 'data_governance', 'data_visualization', 'default'
-            ]
-        else:  # management
-            return [
-                'leadership', 'team_management', 'product_management', 'project_management',
-                'agile', 'strategy', 'innovation', 'culture', 'career', 'default'
-            ]
+    async def _init_session(self):
+        """Initialize aiohttp session if not already initialized"""
+        if self._session is None:
+            self._session = aiohttp.ClientSession()
+            
+    async def _close_session(self):
+        """Close aiohttp session if it exists"""
+        if self._session is not None:
+            await self._session.close()
+            self._session = None
 
 async def main():
     parser = argparse.ArgumentParser()
