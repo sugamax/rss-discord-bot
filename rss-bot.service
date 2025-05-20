@@ -1,12 +1,12 @@
 [Unit]
-Description=RSS Bot Service
+Description=RSS Discord Bot Service
 After=network.target
 
 [Service]
 Type=simple
 User=ec2-user
-WorkingDirectory=/home/ec2-user/rss-bot
-ExecStart=/usr/bin/python3 /home/ec2-user/rss-bot/rss_monitor.py
+WorkingDirectory=/home/ec2-user/rss-discord-bot
+ExecStart=/usr/bin/python3 /home/ec2-user/rss-discord-bot/rss_discord_bot.py
 Restart=on-failure
 Environment=PYTHONUNBUFFERED=1
 
