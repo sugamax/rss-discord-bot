@@ -1,0 +1,84 @@
+rss_feeds:
+  engineering:
+    # Software Engineering & Architecture
+    - name: "Martin Fowler"
+      url: "https://martinfowler.com/feed.atom"
+    - name: "Scott Berkun"
+      url: "https://scottberkun.com/feed"
+    - name: "Toptal Blog"
+      url: "https://toptal.com/blog.rss"
+    - name: "Software Engineering Daily"
+      url: "https://softwareengineeringdaily.com/feed"
+    - name: "Stack Overflow Blog"
+      url: "https://stackoverflow.blog/feed"
+    - name: "Coding Horror"
+      url: "https://blog.codinghorror.com/rss"
+
+    # Architecture & Design
+    - name: "Ben Morris Software Architecture Blog"
+      url: "https://ben-morris.com/rss.xml"
+    - name: "The Architect Elevator"
+      url: "https://architectelevator.com/feed.xml"
+    - name: "Effective Software Design"
+      url: "https://effectivesoftwaredesign.com/rss"
+    - name: "InfoQ Architecture"
+      url: "https://feed.infoq.com/architecture"
+    - name: "AWS Architecture Blog"
+      url: "https://aws.amazon.com/blogs/architecture/feed"
+
+    # Tech Companies Engineering Blogs
+    - name: "GitHub Engineering"
+      url: "https://github.blog/engineering/feed"
+    - name: "Airbnb Engineering"
+      url: "https://medium.com/feed/airbnb-engineering"
+    - name: "Pinterest Engineering"
+      url: "https://medium.com/feed/pinterest-engineering"
+    - name: "AWS Developer Blog"
+      url: "https://aws.amazon.com/blogs/developer/feed"
+    - name: "Microsoft Azure Blog"
+      url: "https://azure.microsoft.com/en-us/blog/feed"
+    - name: "Apple Developer News"
+      url: "https://developer.apple.com/news/rss/news.rss"
+    - name: "Spotify Engineering"
+      url: "https://engineering.atspotify.com/feed"
+    - name: "Netflix Tech Blog"
+      url: "https://netflixtechblog.com/feed"
+    - name: "Meta Engineering"
+      url: "https://engineering.fb.com/feed"
+
+  data_analytics:
+    - name: "Data Engineering Newsletter"
+      url: "https://www.dataengineeringweekly.com/feed"
+    - name: "Benn Stancil's Blog"
+      url: "https://benn.substack.com/feed"
+    - name: "Data Bricks Engineering"
+      url: "https://www.databricks.com/feed"
+    - name: "Data Elixir"
+      url: "https://dataelixir.com/feed"
+    - name: "Locally Optimistic"
+      url: "https://locallyoptimistic.com/feed/"
+
+  management:
+    - name: "The Pragmatic Engineer"
+      url: "https://blog.pragmaticengineer.com/rss/"
+    - name: "Rands in Repose"
+      url: "https://randsinrepose.com/feed/"
+    - name: "CTO craft"
+      url: "https://ctocraft.com/feed/"
+    - name: "The Engineering Manager"
+      url: "https://larahogan.me/feed.xml"
+    - name: "Ask The CTO"
+      url: "https://jeanhsu.substack.com/feed"
+    - name: "Locally Optimistic"
+      url: "https://locallyoptimistic.com/feed/"
+
+settings:
+  log_file: rss_bot.log
+  db_path: rss_bot.db  # SQLite database path
+  channels:
+    engineering:
+      id: YOUR_ENGINEERING_CHANNEL_ID  # Replace with your Discord channel ID
+    data_analytics:
+      id: YOUR_DATA_ANALYTICS_CHANNEL_ID  # Replace with your Discord channel ID
+    management:
+      id: YOUR_MANAGEMENT_CHANNEL_ID  # Replace with your Discord channel ID 

@@ -1,0 +1,11 @@
+[Unit]
+Description=Run RSS Bot twice a week at 12:15 PM Denver time
+
+[Timer]
+OnCalendar=Tue,Fri 12:15:00 America/Denver
+AccuracySec=1m
+Persistent=true
+RandomizedDelaySec=300
+
+[Install]
+WantedBy=timers.target 
