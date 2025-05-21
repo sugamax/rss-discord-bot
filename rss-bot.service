@@ -8,6 +8,7 @@ User=ec2-user
 WorkingDirectory=/home/ec2-user/rss-discord-bot
 ExecStart=/usr/bin/python3 /home/ec2-user/rss-discord-bot/rss_discord_bot.py
 Restart=on-failure
+RestartSec=10
 Environment=PYTHONUNBUFFERED=1
 
 [Install]
