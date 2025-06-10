@@ -27,6 +27,7 @@ from urllib.parse import quote
 import aiohttp
 import sqlite3
 from contextlib import contextmanager
+import traceback
 
 # Download required NLTK data
 try:
@@ -603,7 +604,10 @@ class RSSMonitor(discord.Client):
                         date_tuple = getattr(entry, field)
                         if date_tuple:
                             published = datetime(*date_tuple[:6])
-                            return published >= self.start_date
+                            # Check if the date is within 7 days before current date
+                            now = datetime.now()
+                            time_diff = (now - published).total_seconds()
+                            return time_diff <= (7 * 24 * 60 * 60)  # 7 days in seconds
                     except (TypeError, ValueError) as e:
                         logging.debug(f"Could not parse {field} for entry '{entry_title}' from feed '{feed_name}': {str(e)}")
                         continue
@@ -643,7 +647,10 @@ class RSSMonitor(discord.Client):
                             # If timezone info is missing, assume UTC
                             if published.tzinfo is None:
                                 published = published.replace(tzinfo=timezone.utc)
-                            return published >= self.start_date
+                            # Check if the date is within 7 days before current date
+                            now = datetime.now(published.tzinfo)
+                            time_diff = (now - published).total_seconds()
+                            return time_diff <= (7 * 24 * 60 * 60)  # 7 days in seconds
                         except ValueError:
                             continue
 
@@ -655,7 +662,10 @@ class RSSMonitor(discord.Client):
                     try:
                         date_str = id_date_match.group(1)
                         published = datetime.strptime(date_str, '%Y-%m-%d')
-                        return published >= self.start_date
+                        # Check if the date is within 7 days before current date
+                        now = datetime.now()
+                        time_diff = (now - published).total_seconds()
+                        return time_diff <= (7 * 24 * 60 * 60)  # 7 days in seconds
                     except ValueError:
                         pass
 
@@ -682,6 +692,10 @@ class RSSMonitor(discord.Client):
             return False
 
     def get_category(self, feed_name, title, content, entry):
+        # If the target category is management, always return 'default'
+        if self.target_category == 'management':
+            return 'default'
+        
         # First try to get category from feed tags
         if hasattr(entry, 'tags'):
             # Map common tag names to our categories based on channel type
@@ -1175,53 +1189,11 @@ class RSSMonitor(discord.Client):
         except Exception as e:
             logging.error(f"Error sending final message to channel {channel.id}: {str(e)}")
 
-    async def send_to_discord(self, feed_name, entry):
-        channel = self.get_channel(self.channel_id)
-        if channel:
-            # Get category and send header if needed
-            content = self.get_tldr(entry) or ""
-            category = self.get_category(feed_name, entry.title, content, entry)
-            await self.send_category_header(channel, category)
-            
-            icon = self.get_icon(feed_name, entry.title)
-            tldr = self.get_tldr(entry)
-            
-            embed = discord.Embed(
-                title=f"{icon} {entry.title}",
-                url=entry.link,
-                description=f"From: {feed_name}",
-                color=discord.Color.green()
-            )
-            
-            if tldr:
-                embed.add_field(name="TL;DR", value=tldr, inline=False)
-            
-            try:
-                published = datetime(*entry.published_parsed[:6])
-                embed.add_field(name="Published", value=published.strftime("%Y-%m-%d %H:%M:%S"))
-            except (AttributeError, TypeError):
-                pass
-            await channel.send(embed=embed)
-            await asyncio.sleep(1.5)  # Sleep for 1.5 seconds between messages
-
     async def fetch_feed(self, feed_url):
         try:
             headers = {
-                'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/123.0.0.0 Safari/537.36',
-                'Accept': 'application/rss+xml, application/xml, application/atom+xml, text/xml;q=0.9, */*;q=0.8',
-                'Accept-Language': 'en-US,en;q=0.9',
-                'Accept-Encoding': 'gzip, deflate, br',
-                'Connection': 'keep-alive',
-                'Upgrade-Insecure-Requests': '1',
-                'Cache-Control': 'max-age=0',
-                'Sec-Fetch-Dest': 'document',
-                'Sec-Fetch-Mode': 'navigate',
-                'Sec-Fetch-Site': 'none',
-                'Sec-Fetch-User': '?1',
-                'DNT': '1',
-                'Sec-Ch-Ua': '"Google Chrome";v="123", "Not:A-Brand";v="8", "Chromium";v="123"',
-                'Sec-Ch-Ua-Mobile': '?0',
-                'Sec-Ch-Ua-Platform': '"macOS"'
+                'User-Agent': 'curl/8.5.0',
+                'Accept': '*/*'
             }
             
             # Use aiohttp session if available
@@ -1234,6 +1206,7 @@ class RSSMonitor(discord.Client):
                         if not any(xml_type in content_type for xml_type in ['xml', 'rss', 'atom']):
                             logging.warning(f"Response from {feed_url} doesn't appear to be an RSS feed (content-type: {content_type})")
                             return None
+                        logging.info(f"Feed response from {feed_url}:\n{content[:500]}...")  # Show first 500 chars
                         return feedparser.parse(content)
                 except Exception as e:
                     logging.warning(f"Failed to fetch {feed_url} with aiohttp: {str(e)}")
@@ -1286,6 +1259,7 @@ class RSSMonitor(discord.Client):
             
             # Get the categories to process
             categories_to_process = [self.target_category] if self.target_category else self.feeds.keys()
+            logging.info(f"Processing categories: {categories_to_process}")
             
             for channel_type in categories_to_process:
                 if channel_type not in self.feeds:
@@ -1303,16 +1277,26 @@ class RSSMonitor(discord.Client):
                     logging.error(f"Could not find channel with ID {channel_id}")
                     continue
                 
+                logging.info(f"Processing channel: {channel_type} (ID: {channel_id})")
+                
                 # Dictionary to store entries by feed source
                 feed_entries = defaultdict(list)
                 
                 # Process each feed in this category
                 for feed in self.feeds[channel_type]:
                     if isinstance(feed, dict) and 'name' in feed and 'url' in feed:
+                        logging.info(f"Fetching feed: {feed['name']} ({feed['url']})")
                         try:
-                            async with self._session.get(feed['url'], timeout=10) as response:
+                            headers = {
+                                'User-Agent': 'curl/8.5.0',
+                                'Accept': '*/*'
+                            }
+                            async with self._session.get(feed['url'], headers=headers, timeout=10) as response:
+                                logging.info(f"Response status for {feed['name']}: {response.status}")
+                                logging.info(f"Response headers for {feed['name']}: {dict(response.headers)}")
                                 if response.status == 200:
                                     content = await response.text()
+                                    logging.info(f"Feed response from {feed['name']}:\n{content[:500]}...")  # Show first 500 chars
                                     feed_data = feedparser.parse(content)
                                     
                                     if not feed_data.entries:
@@ -1328,6 +1312,8 @@ class RSSMonitor(discord.Client):
                                             # Save to seen entries
                                             self.seen_entries[feed['name']].append(entry.get('id', entry.get('link', '')))
                                             self.save_seen_entries()
+                                else:
+                                    logging.error(f"Failed to fetch {feed['name']}: HTTP {response.status}")
                                             
                         except asyncio.TimeoutError:
                             logging.error(f"Timeout while fetching feed {feed['name']}")
@@ -1338,6 +1324,7 @@ class RSSMonitor(discord.Client):
                 
                 # Only send header and process entries if there are new entries
                 if feed_entries:
+                    logging.info(f"Found new entries for {channel_type}: {sum(len(entries) for entries in feed_entries.values())} total entries")
                     # Send date header for this channel
                     current_time = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
                     header_embed = discord.Embed(
@@ -1356,9 +1343,11 @@ class RSSMonitor(discord.Client):
                     # Send entries grouped by feed source in batches of 4
                     for feed_name, entries in feed_entries.items():
                         if entries:
+                            logging.info(f"Sending {len(entries)} entries from {feed_name}")
                             # Process entries in batches of 4
                             for i in range(0, len(entries), 4):
                                 batch = entries[i:i+4]
+                                logging.info(f"Sending batch {i//4 + 1} of {(len(entries) + 3)//4} for {feed_name}")
                                 
                                 # Create feed header and batch message
                                 embed = discord.Embed(
@@ -1423,6 +1412,8 @@ class RSSMonitor(discord.Client):
                                     logging.error(f"Timeout while sending message to channel {channel.id}")
                                 except Exception as e:
                                     logging.error(f"Error sending message to channel {channel.id}: {str(e)}")
+                else:
+                    logging.info(f"No new entries found for {channel_type}")
                 
         except Exception as e:
             logging.error(f"Error in check_all_feeds: {str(e)}")
